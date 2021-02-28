@@ -38,7 +38,7 @@ class BridgedInteractiveGrader(StandardGrader):
 
         return (not result.result_flag) and parsed_result
 
-    def _launch_process(self, case):
+    def _launch_process(self, case, input_file=None):
         self._interactor_stdin_pipe, submission_stdout_pipe = os.pipe()
         submission_stdin_pipe, self._interactor_stdout_pipe = os.pipe()
         self._current_proc = self.binary.launch(
@@ -53,7 +53,7 @@ class BridgedInteractiveGrader(StandardGrader):
         os.close(submission_stdin_pipe)
         os.close(submission_stdout_pipe)
 
-    def _interact_with_process(self, case, result, input):
+    def _interact_with_process(self, case, result):
         judge_output = case.output_data()
         # Give TL + 2s by default, so we do not race (and incorrectly throw IE) if submission gets TLE
         self._interactor_time_limit = (self.handler_data.preprocessing_time or 2) + self.problem.time_limit
@@ -63,7 +63,7 @@ class BridgedInteractiveGrader(StandardGrader):
             or contrib_modules[self.contrib_type].ContribModule.get_interactor_args_format_string()
         )
 
-        with mktemp(input) as input_file, mktemp(judge_output) as answer_file:
+        with mktemp(case.input_data()) as input_file, mktemp(judge_output) as answer_file:
             # TODO(@kirito): testlib.h expects a file they can write to,
             # but we currently don't have a sane way to allow this.
             # Thus we pass /dev/null for now so testlib interactors will still

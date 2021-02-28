@@ -13,11 +13,11 @@ class StandardGrader(BaseGrader):
     def grade(self, case):
         result = Result(case)
 
-        input = case.input_data()  # cache generator data
+        input_file = case.input_data_fd()
 
-        self._launch_process(case)
+        self._launch_process(case, input_file)
 
-        error = self._interact_with_process(case, result, input)
+        error = self._interact_with_process(case, result)
 
         process = self._current_proc
 
@@ -74,22 +74,22 @@ class StandardGrader(BaseGrader):
 
         return check
 
-    def _launch_process(self, case):
+    def _launch_process(self, case, input_file=None):
         self._current_proc = self.binary.launch(
             time=self.problem.time_limit,
             memory=self.problem.memory_limit,
             symlinks=case.config.symlinks,
-            stdin=subprocess.PIPE,
+            stdin=input_file or subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             wall_time=case.config.wall_time_factor * self.problem.time_limit,
         )
 
-    def _interact_with_process(self, case, result, input):
+    def _interact_with_process(self, case, result):
         process = self._current_proc
         try:
             result.proc_output, error = process.communicate(
-                input, outlimit=case.config.output_limit_length, errlimit=1048576
+                None, outlimit=case.config.output_limit_length, errlimit=1048576
             )
         except OutputLimitExceeded:
             error = b''
