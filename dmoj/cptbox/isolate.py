@@ -295,7 +295,7 @@ class IsolateTracer(dict):
         real = os.path.realpath(file)
 
         try:
-            same = normalized == real or os.path.samefile(projected, real)
+            same = normalized == real or real.startswith('/memfd:') or os.path.samefile(projected, real)
         except OSError:
             log.debug('Denying access due to inability to stat: normalizes to: %s, actually: %s', normalized, real)
             return file, ACCESS_ENOENT
