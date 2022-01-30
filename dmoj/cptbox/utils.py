@@ -2,14 +2,24 @@ import errno
 import io
 import mmap
 import os
+from tempfile import NamedTemporaryFile
 from typing import Optional
 
 from dmoj.cptbox._cptbox import memory_fd_create, memory_fd_seal
+from dmoj.cptbox.tracer import FREEBSD
 
 
 class MemoryIO(io.FileIO):
+    _name: Optional[str] = None
+
     def __init__(self, prefill: Optional[bytes] = None, seal=False) -> None:
-        super().__init__(memory_fd_create(), 'r+')
+        if FREEBSD:
+            with NamedTemporaryFile(delete=False) as f:
+                self._name = f.name
+                super().__init__(os.dup(f.fileno()), 'r+')
+        else:
+            super().__init__(memory_fd_create(), 'r+')
+
         if prefill:
             self.write(prefill)
         if seal:
@@ -32,7 +42,14 @@ class MemoryIO(io.FileIO):
         finally:
             os.close(new_fd)
 
+    def close(self) -> None:
+        super().close()
+        if self._name:
+            os.unlink(self._name)
+
     def to_path(self) -> str:
+        if self._name:
+            return self._name
         return f'/proc/{os.getpid()}/fd/{self.fileno()}'
 
     def to_bytes(self) -> bytes:
