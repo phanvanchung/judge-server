@@ -11,6 +11,7 @@ from dmoj.commands.show import ShowCommand
 from dmoj.commands.submissions import ListSubmissionsCommand
 from dmoj.commands.submit import SubmitCommand
 from dmoj.commands.test import TestCommand
+from dmoj.commands.validate import ValidateCommand
 
 all_commands: List[Type[Command]] = [
     ListProblemsCommand,
@@ -23,4 +24,5 @@ all_commands: List[Type[Command]] = [
     ShowCommand,
     HelpCommand,
     QuitCommand,
+    ValidateCommand,
 ]
