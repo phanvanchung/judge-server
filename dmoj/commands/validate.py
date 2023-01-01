@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 from itertools import groupby
 from operator import itemgetter
@@ -7,50 +8,17 @@ from typing import List, Optional, Tuple, Union
 
 from dmoj import executors
 from dmoj.commands.base_command import Command
+from dmoj.contrib import contrib_modules
 from dmoj.error import CompileError, InvalidCommandException, OutputLimitExceeded
-from dmoj.graders import StandardGrader
-from dmoj.judgeenv import get_problem_root, get_supported_problems
+from dmoj.judgeenv import env, get_problem_root, get_supported_problems
 from dmoj.problem import BatchedTestCase, Problem, ProblemConfig, ProblemDataManager, TestCase
-from dmoj.result import CheckerResult, Result
+from dmoj.result import Result
 from dmoj.utils.ansi import print_ansi
-from dmoj.utils.unicode import utf8bytes, utf8text
+from dmoj.utils.helper_files import compile_with_auxiliary_files
+from dmoj.utils.unicode import utf8text
 
 
 all_executors = executors.executors
-
-
-class ValidationGrader(StandardGrader):
-    def _interact_with_process(self, case, result, input):
-        process = self._current_proc
-        try:
-            result.proc_output, error = process.communicate(
-                input, outlimit=case.config.output_limit_length, errlimit=1048576
-            )
-        except OutputLimitExceeded:
-            error = b''
-            process.kill()
-        finally:
-            process.wait()
-        result.proc_error = error
-        return error
-
-    def _launch_process(self, case):
-        self._current_proc = self.binary.launch(
-            str(case.batch),
-            str(case.position),
-            time=self.problem.time_limit,
-            memory=self.problem.memory_limit,
-            symlinks=case.config.symlinks,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            wall_time=case.config.wall_time_factor * self.problem.time_limit,
-        )
-
-    def check_result(self, case, result):
-        return CheckerResult(
-            not result.result_flag, (not result.result_flag) * case.points, utf8text(result.proc_error.rstrip())
-        )
 
 
 class ValidateCommand(Command):
@@ -103,31 +71,56 @@ class ValidateCommand(Command):
         if language not in all_executors:
             print_ansi('\t\t#ansi[Skipped](magenta|bold) - Language not supported')
             return 0
-        time_limit = validator_config['time']
-        memory_limit = validator_config['memory']
-        with open(os.path.join(problem_root, validator_config['source'])) as f:
-            source = f.read()
+        time_limit = validator_config.get('time', env.generator_time_limit)
+        memory_limit = validator_config.get('memory', env.generator_memory_limit)
+        compiler_time_limit = validator_config.get('compiler_time_limit', env.generator_compiler_time_limit)
+        read_feedback_from = validator_config.get('feedback', 'stderr')
+
+        if read_feedback_from not in ('stdout', 'stderr'):
+            print_ansi('\t\t#ansi[Skipped](magenta|bold) - Feedback option not supported')
+            return 0
+
+        if isinstance(validator_config.source, str):
+            filenames = [validator_config.source]
+        elif isinstance(validator_config.source.unwrap(), list):
+            filenames = list(validator_config.source.unwrap())
+        else:
+            print_ansi('\t#ansi[Skipped](magenta|bold) - No validator found')
+            return 0
+
+        filenames = [os.path.abspath(os.path.join(problem_root, name)) for name in filenames]
+        try:
+            executor = compile_with_auxiliary_files(filenames, [], language, compiler_time_limit)
+        except CompileError as compilation_error:
+            error_msg = compilation_error.message or 'compiler exited abnormally'
+            print_ansi('#ansi[Failed compiling validator!](red|bold)')
+            print(error_msg.rstrip())
+            return 1
 
         problem = Problem(problem_id, time_limit, memory_limit, {})
 
-        try:
-            real_grader = problem.grader_class(self.judge, problem, language, utf8bytes(source))
-            validation_grader = ValidationGrader(self.judge, problem, language, utf8bytes(source))
-        except CompileError as compilation_error:
-            error = compilation_error.message or 'compiler exited abnormally'
-            print_ansi('#ansi[Failed compiling validator!](red|bold)')
-            print(error.rstrip())
-            return 1
+        grader_class = type('Grader', (problem.grader_class,), {'_generate_binary': lambda *_: None})  # don't compile
+        grader = grader_class(self.judge, problem, language, b'')
 
         flattened_cases: List[Tuple[Optional[int], Union[TestCase, BatchedTestCase]]] = []
         batch_number = 0
-        for case in real_grader.cases():
+        for case in grader.cases():
             if isinstance(case, BatchedTestCase):
                 batch_number += 1
                 for batched_case in case.batched_cases:
                     flattened_cases.append((batch_number, batched_case))
             else:
                 flattened_cases.append((None, case))
+
+        contrib_type = validator_config.get('type', 'default')
+        if contrib_type not in contrib_modules:
+            print_ansi(f'#ansi[{contrib_type} is not a valid contrib module!](red|bold)')
+            return 1
+
+        args_format_string = (
+            validator_config.args_format_string
+            or contrib_modules[contrib_type].ContribModule.get_validator_args_format_string()
+        )
 
         case_number = 0
         fail = 0
@@ -136,11 +129,41 @@ class ValidateCommand(Command):
                 print_ansi(f'#ansi[Batch #{batch_number}](yellow|bold)')
             for _, case in cases:
                 case_number += 1
-                result = validation_grader.grade(case)
+
+                result = Result(case)
+                input = case.input_data()
+
+                validator_args = shlex.split(args_format_string.format(batch_no=case.batch, case_no=case.position))
+                process = executor.launch(
+                    *validator_args,
+                    time=time_limit,
+                    memory=memory_limit,
+                    symlinks=case.config.symlinks,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    wall_time=case.config.wall_time_factor * time_limit,
+                )
+                try:
+                    proc_output, proc_error = process.communicate(
+                        input, outlimit=case.config.output_limit_length, errlimit=1048576
+                    )
+                except OutputLimitExceeded:
+                    proc_error = b''
+                    process.kill()
+                finally:
+                    process.wait()
+
+                executor.populate_result(proc_error, result, process)
+
+                feedback = (
+                    utf8text({'stdout': proc_output, 'stderr': proc_error}[read_feedback_from].rstrip())
+                    or result.feedback
+                )
 
                 code = result.readable_codes()[0]
                 colored_code = f'#ansi[{code}]({Result.COLORS_BYID[code]}|bold)'
-                colored_feedback = f'(#ansi[{utf8text(result.feedback)}](|underline))' if result.feedback else ''
+                colored_feedback = f'(#ansi[{utf8text(feedback)}](|underline))' if feedback else ''
                 case_padding = '  ' if batch_number is not None else ''
                 print_ansi(f'{case_padding}Test case {case_number:2d} {colored_code:3s} {colored_feedback}')
 
